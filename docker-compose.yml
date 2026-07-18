@@ -1,0 +1,8 @@
+services:
+  home-assistant-bot:
+    # Replace "antoinedespres" with your own GitHub username/org if you fork
+    # this repo - the CI workflow pushes to ghcr.io/<owner>/<repo>.
+    image: ghcr.io/antoinedespres/home-assistant-bot:latest
+    container_name: home-assistant-bot
+    restart: unless-stopped
+    env_file: .env
