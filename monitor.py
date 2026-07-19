@@ -2,7 +2,10 @@
 """Entry point: subscribes to Home Assistant's state_changed events and posts
 color-coded Discord embed alerts for door/window sensors, tamper sensors,
 and power consumption thresholds. Entities are discovered automatically by
-`device_class` - no entity IDs need to be configured."""
+`device_class` - no entity IDs need to be configured.
+
+Events missed during a connection gap are backfilled from HA's history API
+on reconnect (see ha_client.py) and reported with their real timestamp."""
 import logging
 import os
 
@@ -14,6 +17,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("home-assistant-bot")
 
 DOOR_DEVICE_CLASSES = {"door", "opening", "window", "garage_door"}
+RELEVANT_DEVICE_CLASSES = DOOR_DEVICE_CLASSES | {"tamper", "power"}
 
 
 def env(name, default=None, cast=str):
@@ -28,7 +32,7 @@ def as_float(value):
         return None
 
 
-def handle_door(notifier, door_state, entity_id, new_state):
+def handle_door(notifier, door_state, entity_id, new_state, timestamp, backfilled):
     friendly_name = new_state["attributes"].get("friendly_name", entity_id)
     is_open = new_state["state"] == "on"
     was_open = door_state.get(entity_id)
@@ -39,16 +43,16 @@ def handle_door(notifier, door_state, entity_id, new_state):
     if is_open:
         notifier.send_embed(
             f"{friendly_name}: opened", "Door/window sensor opened.",
-            {"Entity": entity_id}, WARNING,
+            {"Entity": entity_id}, WARNING, timestamp=timestamp, backfilled=backfilled,
         )
     else:
         notifier.send_embed(
             f"{friendly_name}: closed", "Door/window sensor closed.",
-            {"Entity": entity_id}, OK,
+            {"Entity": entity_id}, OK, timestamp=timestamp, backfilled=backfilled,
         )
 
 
-def handle_tamper(notifier, tamper_state, entity_id, new_state):
+def handle_tamper(notifier, tamper_state, entity_id, new_state, timestamp, backfilled):
     friendly_name = new_state["attributes"].get("friendly_name", entity_id)
     is_tampered = new_state["state"] == "on"
     was_tampered = tamper_state.get(entity_id)
@@ -59,16 +63,16 @@ def handle_tamper(notifier, tamper_state, entity_id, new_state):
     if is_tampered:
         notifier.send_embed(
             f"{friendly_name}: TAMPER DETECTED", "A tamper sensor was triggered.",
-            {"Entity": entity_id}, CRITICAL,
+            {"Entity": entity_id}, CRITICAL, timestamp=timestamp, backfilled=backfilled,
         )
     else:
         notifier.send_embed(
             f"{friendly_name}: tamper cleared", "The tamper condition cleared.",
-            {"Entity": entity_id}, OK,
+            {"Entity": entity_id}, OK, timestamp=timestamp, backfilled=backfilled,
         )
 
 
-def handle_power(notifier, power_monitors, entity_id, new_state, warn_w, crit_w):
+def handle_power(notifier, power_monitors, entity_id, new_state, warn_w, crit_w, timestamp, backfilled):
     value = as_float(new_state["state"])
     if value is None:
         return
@@ -80,7 +84,9 @@ def handle_power(notifier, power_monitors, entity_id, new_state, warn_w, crit_w)
             friendly_name, notifier, warn_threshold=warn_w, crit_threshold=crit_w,
             metric_label="Power draw", unit=unit,
         )
-    power_monitors[entity_id].update(value, context={"Entity": entity_id})
+    power_monitors[entity_id].update(
+        value, context={"Entity": entity_id}, timestamp=timestamp, backfilled=backfilled,
+    )
 
 
 def main():
@@ -112,18 +118,22 @@ def main():
     tamper_state = {}
     power_monitors = {}
 
-    client = HomeAssistantClient(ha_url, ha_token)
-    for entity_id, old_state, new_state in client.state_changes():
+    client = HomeAssistantClient(ha_url, ha_token, RELEVANT_DEVICE_CLASSES)
+    for entity_id, old_state, new_state, backfilled in client.state_changes():
         if new_state is None or new_state["state"] in ("unavailable", "unknown"):
             continue
         device_class = new_state["attributes"].get("device_class")
+        timestamp = new_state.get("last_changed")
 
         if entity_id.startswith("binary_sensor.") and device_class in DOOR_DEVICE_CLASSES:
-            handle_door(notifier, door_state, entity_id, new_state)
+            handle_door(notifier, door_state, entity_id, new_state, timestamp, backfilled)
         elif entity_id.startswith("binary_sensor.") and device_class == "tamper":
-            handle_tamper(notifier, tamper_state, entity_id, new_state)
+            handle_tamper(notifier, tamper_state, entity_id, new_state, timestamp, backfilled)
         elif entity_id.startswith("sensor.") and device_class == "power":
-            handle_power(notifier, power_monitors, entity_id, new_state, power_warn_w, power_crit_w)
+            handle_power(
+                notifier, power_monitors, entity_id, new_state,
+                power_warn_w, power_crit_w, timestamp, backfilled,
+            )
 
 
 if __name__ == "__main__":

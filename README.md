@@ -31,4 +31,5 @@ Required repo secrets: `VPS_HOST`, `VPS_SSH_PORT`, `VPS_SSH_USER`, `VPS_SSH_KEY`
 ## Notes
 
 - Home Assistant's WebSocket API handles reconnection gracefully on this bot's side (auto-reconnects with backoff on any connection error).
+- **Missed-event backfill**: if the connection drops (network blip, HA restart, VPS-to-HA link down, ...), any state changes that happened during the gap are not lost. On reconnect, the bot queries Home Assistant's REST history API (`/api/history/period`) for the door/tamper/power entities, and replays whatever it missed — each alert is tagged "(backfilled)" and carries the event's real historical timestamp, not the reconnect time. Entities to backfill are discovered the same way as live ones (`device_class` via `/api/states`), so this also needs no configuration. This only recovers events Home Assistant itself recorded — if the underlying integration (e.g. a Zigbee coordinator) also lost the event, there's nothing to backfill from.
 - The bot also opens a minimal Discord Gateway connection just to show as online with a status — no events are received over it, alerts are still sent over plain REST.

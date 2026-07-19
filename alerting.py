@@ -27,14 +27,17 @@ class DiscordNotifier:
             "Content-Type": "application/json",
         })
 
-    def send_embed(self, title, description, fields, state):
+    def send_embed(self, title, description, fields, state, timestamp=None, backfilled=False):
+        if backfilled:
+            title = f"{title} (backfilled)"
+            description = f"{description}\n\n_This event happened while the bot was disconnected and is being reported late._"
         payload = {
             "embeds": [{
                 "title": f"{EMOJI[state]} {title}",
                 "description": description,
                 "color": COLOR[state],
                 "fields": [{"name": k, "value": str(v), "inline": True} for k, v in fields.items()],
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "timestamp": timestamp or datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "footer": {"text": "home-assistant-bot"},
             }]
         }
@@ -58,7 +61,7 @@ class Monitor:
         self.unit = unit
         self.state = OK
 
-    def update(self, value, context=None):
+    def update(self, value, context=None, timestamp=None, backfilled=False):
         context = context or {}
         new_state = OK
         if value >= self.crit_threshold:
@@ -87,4 +90,4 @@ class Monitor:
             "Critical at": f"{self.crit_threshold}{self.unit}",
         }
         fields.update(context)
-        self.notifier.send_embed(title, description, fields, new_state)
+        self.notifier.send_embed(title, description, fields, new_state, timestamp=timestamp, backfilled=backfilled)
