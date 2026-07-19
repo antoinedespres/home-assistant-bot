@@ -107,19 +107,25 @@ class HomeAssistantClient:
     def _auth_headers(self):
         return {"Authorization": f"Bearer {self.token}"}
 
+    def fetch_states_by_device_class(self, device_classes=None):
+        """Full current state objects for every entity matching one of the
+        given device classes (defaults to this client's own set)."""
+        device_classes = set(device_classes) if device_classes is not None else self.device_classes
+        resp = requests.get(f"{self._http_base()}/api/states", headers=self._auth_headers(), timeout=30)
+        resp.raise_for_status()
+        return [
+            s for s in resp.json()
+            if s.get("attributes", {}).get("device_class") in device_classes
+        ]
+
     def _fetch_relevant_entity_ids(self):
         """HA's history API requires an explicit entity list - discover which
         entities currently match our device classes via /api/states, so
         backfill still needs zero entity-ID configuration from the user."""
-        resp = requests.get(f"{self._http_base()}/api/states", headers=self._auth_headers(), timeout=30)
-        resp.raise_for_status()
-        return [
-            s["entity_id"] for s in resp.json()
-            if s.get("attributes", {}).get("device_class") in self.device_classes
-        ]
+        return [s["entity_id"] for s in self.fetch_states_by_device_class()]
 
-    def _fetch_history(self, start_iso, end_iso):
-        entity_ids = self._fetch_relevant_entity_ids()
+    def fetch_history(self, entity_ids, start_iso, end_iso):
+        """Historical state entries for the given entity IDs, oldest first."""
         if not entity_ids:
             return []
         url = f"{self._http_base()}/api/history/period/{quote(start_iso)}"
@@ -137,3 +143,6 @@ class HomeAssistantClient:
         flat = [state for entity_list in per_entity_lists for state in entity_list if state.get("entity_id")]
         flat.sort(key=lambda s: s.get("last_changed", ""))
         return [(state["entity_id"], state) for state in flat]
+
+    def _fetch_history(self, start_iso, end_iso):
+        return self.fetch_history(self._fetch_relevant_entity_ids(), start_iso, end_iso)

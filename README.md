@@ -12,7 +12,7 @@ Entities are discovered **automatically by `device_class`** (`door`/`opening`/`w
 
 1. **Discord bot**: create a Discord Application + Bot at [discord.com/developers/applications](https://discord.com/developers/applications), copy its token, and invite it to your server with the `Send Messages` + `Embed Links` permissions (OAuth2 → URL Generator → scope `bot`).
 2. **Home Assistant long-lived access token**: in Home Assistant, click your profile (bottom left) → **Security** tab → **Create long-lived access token** → copy it (shown only once).
-3. Copy `.env.example` to `.env` and fill in `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`, `HA_URL` (`ws://` on a local network, `wss://` through a public HTTPS reverse proxy), and `HA_TOKEN`.
+3. Copy `.env.example` to `.env` and fill in `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`, `HA_URL` (`ws://` on a local network, `wss://` through a public HTTPS reverse proxy), and `HA_TOKEN`. Set `DISCORD_GUILD_ID` too if you want slash commands (see below) — leave it empty to skip them.
 4. Run it:
    ```
    docker compose up -d
@@ -21,6 +21,17 @@ Entities are discovered **automatically by `device_class`** (`door`/`opening`/`w
 ## Configuration
 
 All settings live in `.env` (see `.env.example`): Discord credentials, the Home Assistant WebSocket URL/token, and the power sensor warn/critical thresholds (in whatever unit your sensors report, usually W).
+
+## Slash commands
+
+Set `DISCORD_GUILD_ID` (right-click your server icon → Copy Server ID) to enable read-only slash commands, registered directly in your server on startup (instant, unlike global commands which can take up to an hour to appear):
+
+- `/status` — current state of every monitored entity.
+- `/entities` — which entities are currently auto-discovered, grouped by device class.
+- `/battery` — battery level of every battery-powered sensor, flags anything under 20%.
+- `/history entity_id [hours]` — recent state changes for one entity (default: last 24h). Use `/entities` to find the right ID.
+
+These reuse the same `device_class` auto-discovery and history API the alerting/backfill side already uses — no entity IDs to configure, no extra HA permissions. Commands are handled over the same Discord Gateway connection used for the bot's online presence.
 
 ## CI/CD
 

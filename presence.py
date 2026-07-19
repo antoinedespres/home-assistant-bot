@@ -1,6 +1,7 @@
-"""Maintains a Discord Gateway connection purely so the bot shows as online
-with a status. Alerts are still sent over plain REST (see alerting.py) -
-this connection carries no events, it only exists for presence."""
+"""Maintains a Discord Gateway connection so the bot shows as online with a
+status, and (optionally) dispatches INTERACTION_CREATE events (slash
+commands) to a callback. Alerts are still sent over plain REST (see
+alerting.py) - this connection is not used to deliver them."""
 import json
 import logging
 import threading
@@ -12,12 +13,20 @@ import websocket
 logger = logging.getLogger("home-assistant-bot")
 
 GATEWAY_VERSION = 10
+OP_DISPATCH = 0
+OP_HEARTBEAT = 1
+OP_RECONNECT = 7
+OP_INVALID_SESSION = 9
 
 
 class GatewayPresence:
-    def __init__(self, token, status_text="your Home Assistant devices"):
+    def __init__(self, token, status_text="your Home Assistant devices", on_interaction=None):
         self.token = token
         self.status_text = status_text
+        # Called (in its own thread, so it can't block the heartbeat loop)
+        # with the interaction payload whenever Discord dispatches
+        # INTERACTION_CREATE - e.g. a slash command invocation.
+        self.on_interaction = on_interaction
         self._stop = threading.Event()
 
     def start(self):
@@ -73,9 +82,11 @@ class GatewayPresence:
                 if msg:
                     data = json.loads(msg)
                     op = data.get("op")
-                    if op == 1:  # server requested an immediate heartbeat
+                    if op == OP_DISPATCH and data.get("t") == "INTERACTION_CREATE" and self.on_interaction:
+                        threading.Thread(target=self.on_interaction, args=(data["d"],), daemon=True).start()
+                    elif op == OP_HEARTBEAT:  # server requested an immediate heartbeat
                         ws.send(json.dumps({"op": 1, "d": None}))
-                    elif op in (7, 9):  # reconnect requested / invalid session
+                    elif op in (OP_RECONNECT, OP_INVALID_SESSION):
                         break
                 if time.time() - last_heartbeat >= interval:
                     ws.send(json.dumps({"op": 1, "d": None}))

@@ -10,6 +10,7 @@ import logging
 import os
 
 from alerting import CRITICAL, INFO, OK, WARNING, DiscordNotifier, Monitor
+from commands import InteractionHandler, fetch_application_id, register_guild_commands
 from ha_client import HomeAssistantClient
 from presence import GatewayPresence
 
@@ -17,7 +18,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("home-assistant-bot")
 
 DOOR_DEVICE_CLASSES = {"door", "opening", "window", "garage_door"}
+# Entities the alerting/backfill side actively watches and reacts to.
 RELEVANT_DEVICE_CLASSES = DOOR_DEVICE_CLASSES | {"tamper", "power"}
+# Entities shown by the read-only /status and /entities commands - a wider
+# set than alerting, since a status dashboard is useful even for sensors
+# that don't (yet) have alert logic of their own.
+STATUS_DEVICE_CLASSES = RELEVANT_DEVICE_CLASSES | {"temperature", "humidity", "battery"}
 
 
 def env(name, default=None, cast=str):
@@ -92,6 +98,7 @@ def handle_power(notifier, power_monitors, entity_id, new_state, warn_w, crit_w,
 def main():
     token = env("DISCORD_BOT_TOKEN")
     channel_id = env("DISCORD_CHANNEL_ID")
+    guild_id = env("DISCORD_GUILD_ID")
     ha_url = env("HA_URL", "ws://localhost:8123/api/websocket")
     ha_token = env("HA_TOKEN")
     power_warn_w = env("POWER_WARN_THRESHOLD_W", "1500", float)
@@ -112,13 +119,22 @@ def main():
         INFO,
     )
 
-    GatewayPresence(token).start()
+    client = HomeAssistantClient(ha_url, ha_token, RELEVANT_DEVICE_CLASSES)
+
+    on_interaction = None
+    if guild_id:
+        application_id = fetch_application_id(token)
+        register_guild_commands(token, application_id, guild_id)
+        on_interaction = InteractionHandler(application_id, token, client, STATUS_DEVICE_CLASSES).handle
+    else:
+        logger.info("DISCORD_GUILD_ID not set - slash commands disabled")
+
+    GatewayPresence(token, on_interaction=on_interaction).start()
 
     door_state = {}
     tamper_state = {}
     power_monitors = {}
 
-    client = HomeAssistantClient(ha_url, ha_token, RELEVANT_DEVICE_CLASSES)
     for entity_id, old_state, new_state, backfilled in client.state_changes():
         if new_state is None or new_state["state"] in ("unavailable", "unknown"):
             continue
