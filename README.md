@@ -2,7 +2,7 @@
 
 Discord bot that watches a Home Assistant instance and posts color-coded alert embeds (🟢 recovered / 🟠 warning / 🔴 critical) for:
 
-- **Door/window sensors** — 🟠 when opened, 🟢 when closed.
+- **Door/window sensors** — 🟠 when opened, 🟢 when closed, 🔴 if left open longer than a configurable number of minutes (default 1).
 - **Tamper sensors** — 🔴 when triggered, 🟢 when cleared.
 - **Power consumption** — 🟠/🔴 when a plug crosses a configurable wattage threshold, 🟢 when it drops back below.
 
@@ -20,18 +20,21 @@ Entities are discovered **automatically by `device_class`** (`door`/`opening`/`w
 
 ## Configuration
 
-All settings live in `.env` (see `.env.example`): Discord credentials, the Home Assistant WebSocket URL/token, and the power sensor warn/critical thresholds (in whatever unit your sensors report, usually W).
+All settings live in `.env` (see `.env.example`): Discord credentials, the Home Assistant WebSocket URL/token, the power sensor warn/critical thresholds (in whatever unit your sensors report, usually W), and `DOOR_OPEN_ALERT_MINUTES`, the default delay for the door-left-open alert.
+
+Values changed through slash commands are saved to `data/settings.json`, which `docker-compose.yml` mounts from `./data` on the host so they survive redeploys.
 
 ## Slash commands
 
-Set `DISCORD_GUILD_ID` (right-click your server icon → Copy Server ID) to enable read-only slash commands, registered directly in your server on startup (instant, unlike global commands which can take up to an hour to appear):
+Set `DISCORD_GUILD_ID` (right-click your server icon → Copy Server ID) to enable slash commands, registered directly in your server on startup (instant, unlike global commands which can take up to an hour to appear):
 
 - `/status` — current state of every monitored entity.
 - `/entities` — which entities are currently auto-discovered, grouped by device class.
 - `/battery` — battery level of every battery-powered sensor, flags anything under 20%.
 - `/history entity_id [hours]` — recent state changes for one entity (default: last 24h). Use `/entities` to find the right ID.
+- `/door-alert [minutes]`: show or set how many minutes a door/window can stay open before the 🔴 alert (0 disables it). Only visible to members with **Manage Server** by default; adjust under Server Settings → Integrations.
 
-These reuse the same `device_class` auto-discovery and history API the alerting/backfill side already uses — no entity IDs to configure, no extra HA permissions. Commands are handled over the same Discord Gateway connection used for the bot's online presence.
+Apart from `/door-alert`, these are read-only and reuse the same `device_class` auto-discovery and history API the alerting/backfill side already uses — no entity IDs to configure, no extra HA permissions. Commands are handled over the same Discord Gateway connection used for the bot's online presence.
 
 ## CI/CD
 

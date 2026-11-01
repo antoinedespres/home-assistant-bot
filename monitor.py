@@ -11,8 +11,10 @@ import os
 
 from alerting import CRITICAL, INFO, OK, WARNING, DiscordNotifier, Monitor
 from commands import InteractionHandler, fetch_application_id, register_guild_commands
+from door_watch import SETTING_KEY as DOOR_OPEN_MINUTES_KEY, OpenDoorWatcher, parse_timestamp
 from ha_client import HomeAssistantClient
 from presence import GatewayPresence
+from settings import Settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("home-assistant-bot")
@@ -24,6 +26,7 @@ RELEVANT_DEVICE_CLASSES = DOOR_DEVICE_CLASSES | {"tamper", "power"}
 # set than alerting, since a status dashboard is useful even for sensors
 # that don't (yet) have alert logic of their own.
 STATUS_DEVICE_CLASSES = RELEVANT_DEVICE_CLASSES | {"temperature", "humidity", "battery"}
+SETTINGS_PATH = "data/settings.json"
 
 
 def env(name, default=None, cast=str):
@@ -38,7 +41,7 @@ def as_float(value):
         return None
 
 
-def handle_door(notifier, door_state, entity_id, new_state, timestamp, backfilled):
+def handle_door(notifier, door_state, door_watcher, entity_id, new_state, timestamp, backfilled):
     friendly_name = new_state["attributes"].get("friendly_name", entity_id)
     is_open = new_state["state"] == "on"
     was_open = door_state.get(entity_id)
@@ -47,15 +50,35 @@ def handle_door(notifier, door_state, entity_id, new_state, timestamp, backfille
     door_state[entity_id] = is_open
 
     if is_open:
+        door_watcher.opened(entity_id, friendly_name, parse_timestamp(timestamp))
         notifier.send_embed(
             f"{friendly_name}: opened", "Door/window sensor opened.",
             {"Entity": entity_id}, WARNING, timestamp=timestamp, backfilled=backfilled,
         )
     else:
+        door_watcher.closed(entity_id)
         notifier.send_embed(
             f"{friendly_name}: closed", "Door/window sensor closed.",
             {"Entity": entity_id}, OK, timestamp=timestamp, backfilled=backfilled,
         )
+
+
+def seed_door_state(client, door_state, door_watcher):
+    """Doors already open at startup produce no state_changed event, so
+    without this they would never trigger the open-too-long alert."""
+    try:
+        states = client.fetch_states_by_device_class(DOOR_DEVICE_CLASSES)
+    except Exception:
+        logger.exception("Could not fetch current door states, open-door tracking starts with the next change")
+        return
+    for s in states:
+        entity_id = s["entity_id"]
+        if not entity_id.startswith("binary_sensor.") or s["state"] not in ("on", "off"):
+            continue
+        door_state[entity_id] = s["state"] == "on"
+        if door_state[entity_id]:
+            friendly_name = s["attributes"].get("friendly_name", entity_id)
+            door_watcher.opened(entity_id, friendly_name, parse_timestamp(s.get("last_changed")))
 
 
 def handle_tamper(notifier, tamper_state, entity_id, new_state, timestamp, backfilled):
@@ -103,6 +126,7 @@ def main():
     ha_token = env("HA_TOKEN")
     power_warn_w = env("POWER_WARN_THRESHOLD_W", "1500", float)
     power_crit_w = env("POWER_CRIT_THRESHOLD_W", "2000", float)
+    door_open_minutes = env("DOOR_OPEN_ALERT_MINUTES", "1", int)
 
     if not token or not channel_id:
         raise SystemExit("DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID must be set (see .env.example)")
@@ -120,12 +144,13 @@ def main():
     )
 
     client = HomeAssistantClient(ha_url, ha_token, RELEVANT_DEVICE_CLASSES)
+    settings = Settings(SETTINGS_PATH, {DOOR_OPEN_MINUTES_KEY: door_open_minutes})
 
     on_interaction = None
     if guild_id:
         application_id = fetch_application_id(token)
         register_guild_commands(token, application_id, guild_id)
-        on_interaction = InteractionHandler(application_id, token, client, STATUS_DEVICE_CLASSES).handle
+        on_interaction = InteractionHandler(application_id, token, client, STATUS_DEVICE_CLASSES, settings).handle
     else:
         logger.info("DISCORD_GUILD_ID not set - slash commands disabled")
 
@@ -134,6 +159,9 @@ def main():
     door_state = {}
     tamper_state = {}
     power_monitors = {}
+    door_watcher = OpenDoorWatcher(notifier, settings)
+    seed_door_state(client, door_state, door_watcher)
+    door_watcher.start()
 
     for entity_id, old_state, new_state, backfilled in client.state_changes():
         if new_state is None or new_state["state"] in ("unavailable", "unknown"):
@@ -142,7 +170,7 @@ def main():
         timestamp = new_state.get("last_changed")
 
         if entity_id.startswith("binary_sensor.") and device_class in DOOR_DEVICE_CLASSES:
-            handle_door(notifier, door_state, entity_id, new_state, timestamp, backfilled)
+            handle_door(notifier, door_state, door_watcher, entity_id, new_state, timestamp, backfilled)
         elif entity_id.startswith("binary_sensor.") and device_class == "tamper":
             handle_tamper(notifier, tamper_state, entity_id, new_state, timestamp, backfilled)
         elif entity_id.startswith("sensor.") and device_class == "power":

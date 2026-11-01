@@ -9,6 +9,8 @@ import logging
 
 import requests
 
+from door_watch import SETTING_KEY as DOOR_OPEN_MINUTES_KEY
+
 logger = logging.getLogger("home-assistant-bot")
 
 API = "https://discord.com/api/v10"
@@ -24,6 +26,8 @@ CALLBACK_DEFERRED_CHANNEL_MESSAGE = 5
 COLOR_INFO = 0x3498DB
 COLOR_WARN = 0xE67E22
 COLOR_ERROR = 0xE74C3C
+
+PERMISSION_MANAGE_GUILD = str(1 << 5)
 
 # Groups several raw device_classes under one /status section, in display order.
 STATUS_CATEGORIES = [
@@ -69,6 +73,21 @@ COMMANDS = [
             },
         ],
     },
+    {
+        "name": "door-alert",
+        "description": "Show or set how long a door/window can stay open before an alert",
+        "default_member_permissions": PERMISSION_MANAGE_GUILD,
+        "options": [
+            {
+                "name": "minutes",
+                "description": "Minutes before alerting (0 disables). Omit to show the current value",
+                "type": OPTION_INTEGER,
+                "required": False,
+                "min_value": 0,
+                "max_value": 1440,
+            },
+        ],
+    },
 ]
 
 
@@ -94,11 +113,12 @@ def _friendly_name(state):
 
 
 class InteractionHandler:
-    def __init__(self, application_id, bot_token, ha_client, device_classes):
+    def __init__(self, application_id, bot_token, ha_client, device_classes, settings):
         self.application_id = application_id
         self.bot_token = bot_token
         self.ha_client = ha_client
         self.device_classes = device_classes
+        self.settings = settings
 
     def handle(self, interaction):
         """Entry point for a Gateway INTERACTION_CREATE dispatch. Meant to be
@@ -140,6 +160,8 @@ class InteractionHandler:
             return self._cmd_battery()
         if name == "history":
             return self._cmd_history(options.get("entity_id"), options.get("hours", 24))
+        if name == "door-alert":
+            return self._cmd_door_alert(options.get("minutes"))
         return {"title": "Unknown command", "color": COLOR_WARN}
 
     def _cmd_status(self):
@@ -221,6 +243,20 @@ class InteractionHandler:
             "color": COLOR_INFO,
             "footer": {"text": f"Last {hours}h, most recent {min(len(entries), 20)} of {len(entries)} change(s)"},
         }
+
+
+    def _cmd_door_alert(self, minutes):
+        if minutes is None:
+            title = "Door-open alert"
+            minutes = self.settings.get(DOOR_OPEN_MINUTES_KEY)
+        else:
+            title = "Door-open alert updated"
+            self.settings.set(DOOR_OPEN_MINUTES_KEY, minutes)
+        if minutes <= 0:
+            description = "Disabled: no alert for doors/windows left open."
+        else:
+            description = f"Alerting when a door/window stays open for more than **{minutes} min**."
+        return {"title": title, "description": description, "color": COLOR_INFO}
 
 
 def _safe_float(value):

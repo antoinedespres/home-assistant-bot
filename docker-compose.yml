@@ -6,3 +6,5 @@ services:
     container_name: home-assistant-bot
     restart: unless-stopped
     env_file: .env
+    volumes:
+      - ./data:/app/data
